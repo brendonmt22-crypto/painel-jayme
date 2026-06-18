@@ -253,13 +253,10 @@ curtidas_liq = extrair_acao(acoes, "onsite_conversion.post_net_like")
 salvamentos = extrair_acao(acoes, "onsite_conversion.post_save")
 video_views = extrair_acao(acoes, "video_view")
 thruplay = extrair_acao(t.get("video_thruplay_watched_actions", []), "video_view")
-conversas = extrair_acao(acoes, "onsite_conversion.messaging_conversation_started_7d")
-primeira_resp = extrair_acao(acoes, "onsite_conversion.messaging_first_reply")
 recall = extrair_acao([{"action_type": "x", "value": t.get("estimated_ad_recallers", 0)}], "x")
 
 custo_engaj = extrair_custo(custos, "post_engagement")
 custo_view = extrair_custo(custos, "video_view")
-custo_conversa = extrair_custo(custos, "onsite_conversion.messaging_conversation_started_7d")
 
 # ── Seção 1: Alcance & Reconhecimento ──
 st.markdown('<div class="secao">📣 Alcance & Reconhecimento</div>', unsafe_allow_html=True)
@@ -294,16 +291,6 @@ c[1].metric("Salvamentos", fmt_ou_traco(salvamentos))
 c[2].metric("▶️ Views de vídeo", fmt(video_views))
 c[3].metric("✅ ThruPlay (vídeo assistido)", fmt_ou_traco(thruplay))
 c[4].metric(" ", " ")
-
-# ── Seção 4: Mensagens (só se houver) ──
-if conversas > 0 or primeira_resp > 0:
-    st.markdown('<div class="secao">💬 Conversas (WhatsApp / Direct)</div>', unsafe_allow_html=True)
-    c = st.columns(5)
-    c[0].metric("Conversas iniciadas", fmt_ou_traco(conversas))
-    c[1].metric("Custo por conversa", fmt_money(custo_conversa))
-    c[2].metric("1ª resposta", fmt_ou_traco(primeira_resp))
-    c[3].metric(" ", " ")
-    c[4].metric(" ", " ")
 
 st.divider()
 
