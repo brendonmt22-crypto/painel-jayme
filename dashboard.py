@@ -10,6 +10,7 @@ SEGURANÇA: o token NUNCA fica no código. Vai em .streamlit/secrets.toml
 """
 
 import os
+import json
 import datetime as dt
 
 import pandas as pd
@@ -135,7 +136,11 @@ def buscar_serie_diaria(account_id: str, token: str, date_preset: str) -> pd.Dat
 def buscar_por_campanha(account_id: str, token: str, date_preset: str) -> pd.DataFrame:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{account_id}/insights"
     params = {"access_token": token, "date_preset": date_preset, "level": "campaign",
-              "fields": "campaign_name,impressions,reach,frequency,ctr,cpm,spend,actions"}
+              "fields": "campaign_name,impressions,reach,frequency,ctr,cpm,spend,actions",
+              # mostra SÓ campanhas atualmente ativas (ignora pausadas/encerradas)
+              "filtering": json.dumps([{
+                  "field": "campaign.effective_status",
+                  "operator": "IN", "value": ["ACTIVE"]}])}
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
     linhas = []
@@ -321,10 +326,11 @@ if not serie.empty and len(serie) > 1:
 
 st.divider()
 
-# ── Tabela por campanha ──
-st.markdown('<div class="secao">📋 Por campanha</div>', unsafe_allow_html=True)
+# ── Tabela por campanha (apenas ATIVAS) ──
+st.markdown('<div class="secao">📋 Campanhas ativas</div>', unsafe_allow_html=True)
 camp = buscar_por_campanha(AD_ACCOUNT_ID, token, date_preset)
 if not camp.empty:
+    st.caption(f"{len(camp)} campanha(s) ativa(s) com entrega no período · ordenadas por investimento")
     st.dataframe(
         camp, width="stretch", hide_index=True,
         column_config={
@@ -334,6 +340,7 @@ if not camp.empty:
         },
     )
 else:
-    st.info("Nenhuma campanha ativa no período.")
+    st.info("Nenhuma campanha **ativa** com entrega neste período. "
+            "Troque o período (ex.: *Hoje*) para ver as campanhas em veiculação agora.")
 
 st.caption("Painel desenvolvido por AGM Tráfego · dados atualizados automaticamente via Meta Ads.")
