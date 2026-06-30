@@ -94,12 +94,23 @@ CAMPOS_TOTAIS = ",".join([
     "estimated_ad_recallers", "estimated_ad_recall_rate",
 ])
 
+# presets "ao vivo" -> tabela mostra só campanhas ATIVAS hoje.
+# períodos históricos (60d/90d/mês/ano/custom) -> mostra todas com entrega no período.
+LIVE_PRESETS = {"today", "yesterday", "last_7d", "last_14d", "last_30d"}
+
+
+def _periodo_params(date_preset, since, until) -> dict:
+    """Monta o parâmetro de período: time_range (custom) tem prioridade sobre date_preset."""
+    if since and until:
+        return {"time_range": json.dumps({"since": since, "until": until})}
+    return {"date_preset": date_preset or "last_7d"}
+
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def buscar_insights(account_id: str, token: str, date_preset: str) -> dict:
+def buscar_insights(account_id: str, token: str, date_preset, since, until) -> dict:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{account_id}/insights"
-    params = {"access_token": token, "date_preset": date_preset,
-              "level": "account", "fields": CAMPOS_TOTAIS}
+    params = {"access_token": token, "level": "account", "fields": CAMPOS_TOTAIS}
+    params.update(_periodo_params(date_preset, since, until))
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
     data = resp.json().get("data", [])
@@ -107,11 +118,11 @@ def buscar_insights(account_id: str, token: str, date_preset: str) -> dict:
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def buscar_serie_diaria(account_id: str, token: str, date_preset: str) -> pd.DataFrame:
+def buscar_serie_diaria(account_id: str, token: str, date_preset, since, until) -> pd.DataFrame:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{account_id}/insights"
-    params = {"access_token": token, "date_preset": date_preset, "level": "account",
-              "time_increment": 1,
+    params = {"access_token": token, "level": "account", "time_increment": 1,
               "fields": "impressions,reach,inline_link_clicks,spend,actions"}
+    params.update(_periodo_params(date_preset, since, until))
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
     linhas = []
@@ -133,14 +144,17 @@ def buscar_serie_diaria(account_id: str, token: str, date_preset: str) -> pd.Dat
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def buscar_por_campanha(account_id: str, token: str, date_preset: str) -> pd.DataFrame:
+def buscar_por_campanha(account_id: str, token: str, date_preset, since, until,
+                        apenas_ativas: bool = True) -> pd.DataFrame:
     url = f"https://graph.facebook.com/{GRAPH_VERSION}/{account_id}/insights"
-    params = {"access_token": token, "date_preset": date_preset, "level": "campaign",
-              "fields": "campaign_name,impressions,reach,frequency,ctr,cpm,spend,actions",
-              # mostra SÓ campanhas atualmente ativas (ignora pausadas/encerradas)
-              "filtering": json.dumps([{
-                  "field": "campaign.effective_status",
-                  "operator": "IN", "value": ["ACTIVE"]}])}
+    params = {"access_token": token, "level": "campaign",
+              "fields": "campaign_name,impressions,reach,frequency,ctr,cpm,spend,actions"}
+    params.update(_periodo_params(date_preset, since, until))
+    if apenas_ativas:
+        # período "ao vivo": mostra SÓ campanhas atualmente ativas (ignora pausadas/encerradas)
+        params["filtering"] = json.dumps([{
+            "field": "campaign.effective_status",
+            "operator": "IN", "value": ["ACTIVE"]}])
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
     linhas = []
@@ -203,14 +217,48 @@ with st.sidebar:
     st.caption(f"Painel exclusivo · {NOME_CLIENTE}")
     st.divider()
 
+    hoje = dt.date.today()
     periodo_label = st.selectbox(
         "Período",
-        ["Hoje", "Ontem", "Últimos 7 dias", "Últimos 14 dias", "Últimos 30 dias"],
+        ["Hoje", "Ontem", "Últimos 7 dias", "Últimos 14 dias", "Últimos 30 dias",
+         "Últimos 60 dias", "Últimos 90 dias", "Mês passado", "Ano passado",
+         "Mês específico", "Intervalo personalizado"],
         index=2,
     )
-    mapa_periodo = {"Hoje": "today", "Ontem": "yesterday", "Últimos 7 dias": "last_7d",
-                    "Últimos 14 dias": "last_14d", "Últimos 30 dias": "last_30d"}
-    date_preset = mapa_periodo[periodo_label]
+    PRESETS = {"Hoje": "today", "Ontem": "yesterday", "Últimos 7 dias": "last_7d",
+               "Últimos 14 dias": "last_14d", "Últimos 30 dias": "last_30d",
+               "Últimos 90 dias": "last_90d", "Mês passado": "last_month",
+               "Ano passado": "last_year"}
+
+    date_preset = since = until = None
+    if periodo_label in PRESETS:
+        date_preset = PRESETS[periodo_label]
+    elif periodo_label == "Últimos 60 dias":
+        since = (hoje - dt.timedelta(days=60)).isoformat()
+        until = hoje.isoformat()
+    elif periodo_label == "Mês específico":
+        MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                 "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+        cm = st.columns(2)
+        mes_nome = cm[0].selectbox("Mês", MESES, index=5)        # Junho como padrão
+        ano = int(cm[1].number_input("Ano", min_value=2018, max_value=hoje.year,
+                                     value=hoje.year - 1, step=1))
+        m = MESES.index(mes_nome) + 1
+        primeiro = dt.date(ano, m, 1)
+        prox = dt.date(ano + 1, 1, 1) if m == 12 else dt.date(ano, m + 1, 1)
+        ultimo = prox - dt.timedelta(days=1)
+        since, until = primeiro.isoformat(), ultimo.isoformat()
+        st.caption(f"📅 {primeiro:%d/%m/%Y} → {ultimo:%d/%m/%Y}")
+    elif periodo_label == "Intervalo personalizado":
+        cm = st.columns(2)
+        d1 = cm[0].date_input("De", value=hoje - dt.timedelta(days=30),
+                              min_value=dt.date(2018, 1, 1), max_value=hoje)
+        d2 = cm[1].date_input("Até", value=hoje,
+                              min_value=dt.date(2018, 1, 1), max_value=hoje)
+        if d1 > d2:
+            st.error("A data inicial não pode ser maior que a final.")
+            st.stop()
+        since, until = d1.isoformat(), d2.isoformat()
 
     intervalo = st.slider("Atualizar a cada (min)", 1, 30, 5)
     st.caption(f"Última checagem: {dt.datetime.now():%H:%M:%S}")
@@ -232,7 +280,7 @@ st.markdown(f"""
 token = get_token()
 
 try:
-    t = buscar_insights(AD_ACCOUNT_ID, token, date_preset)
+    t = buscar_insights(AD_ACCOUNT_ID, token, date_preset, since, until)
 except requests.HTTPError as e:
     st.error(f"Erro ao buscar dados da Meta API: {e}")
     st.stop()
@@ -295,7 +343,7 @@ c[4].metric(" ", " ")
 st.divider()
 
 # ── Gráfico de evolução diária ──
-serie = buscar_serie_diaria(AD_ACCOUNT_ID, token, date_preset)
+serie = buscar_serie_diaria(AD_ACCOUNT_ID, token, date_preset, since, until)
 if not serie.empty and len(serie) > 1:
     st.markdown('<div class="secao">📈 Evolução diária</div>', unsafe_allow_html=True)
     metrica = st.radio(
@@ -313,11 +361,15 @@ if not serie.empty and len(serie) > 1:
 
 st.divider()
 
-# ── Tabela por campanha (apenas ATIVAS) ──
-st.markdown('<div class="secao">📋 Campanhas ativas</div>', unsafe_allow_html=True)
-camp = buscar_por_campanha(AD_ACCOUNT_ID, token, date_preset)
+# ── Tabela por campanha ──
+# período "ao vivo" -> só campanhas ativas; período histórico -> todas com entrega
+apenas_ativas = since is None and date_preset in LIVE_PRESETS
+titulo_camp = "Campanhas ativas" if apenas_ativas else "Campanhas com entrega no período"
+st.markdown(f'<div class="secao">📋 {titulo_camp}</div>', unsafe_allow_html=True)
+camp = buscar_por_campanha(AD_ACCOUNT_ID, token, date_preset, since, until, apenas_ativas)
 if not camp.empty:
-    st.caption(f"{len(camp)} campanha(s) ativa(s) com entrega no período · ordenadas por investimento")
+    suf = "ativa(s)" if apenas_ativas else "com entrega"
+    st.caption(f"{len(camp)} campanha(s) {suf} no período · ordenadas por investimento")
     st.dataframe(
         camp, width="stretch", hide_index=True,
         column_config={
@@ -327,7 +379,7 @@ if not camp.empty:
         },
     )
 else:
-    st.info("Nenhuma campanha **ativa** com entrega neste período. "
-            "Troque o período (ex.: *Hoje*) para ver as campanhas em veiculação agora.")
+    st.info("Nenhuma campanha com entrega neste período. "
+            "Tente outro período na barra lateral.")
 
 st.caption("Painel desenvolvido por AGM Tráfego · dados atualizados automaticamente via Meta Ads.")
